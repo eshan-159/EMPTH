@@ -1,0 +1,21 @@
+{
+  "name": "empth",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend",
+    "services",
+    "tools"
+  ],
+  "scripts": {
+    "dev": "concurrently -n BACKEND,APP -c blue,green \"npm:dev -w backend\" \"npm:dev -w frontend\"",
+    "dev:backend": "npm run dev -w backend",
+    "dev:app": "npm run dev -w frontend",
+    "lint": "echo 'no lint configured'",
+    "build": "npm run build -w backend && npm run build -w frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "wait-on": "^8.0.0"
+  }
+}

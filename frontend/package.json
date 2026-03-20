@@ -1,0 +1,14 @@
+{
+  "name": "@empth/frontend",
+  "private": true,
+  "type": "module",
+  "main": "src/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "build": "echo 'no build step (static renderer)'"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "electron": "^35.0.0"
+  }
+}

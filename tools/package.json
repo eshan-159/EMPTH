@@ -1,0 +1,12 @@
+{
+  "name": "@empth/tools",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "echo 'no build step (ESM)'"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  }
+}
