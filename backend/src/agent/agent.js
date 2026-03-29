@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import crypto from 'node:crypto';
 import { llm, sarvam } from '@empth/services';
-import { toolRegistry } from '@empth/tools';
+import { toolRegistry, toolDescriptions, toolRules } from '@empth/tools';
 
 const ActionSchema = z.object({
   action: z.string(),
@@ -15,19 +15,40 @@ function requiresTool(intent, userText) {
   // Also catch common phrasing that may not match intent regex.
   const t = userText.toLowerCase();
   if (/\b(convert|export)\b.*\bpdf\b/.test(t)) return true;
+  if (/whatsapp|watsap|app|open|tell|msg|message/i.test(t)) return true;
   return false;
 }
 
 function agentSystemPrompt() {
   const currentWorkDir = process.env.ASSISTANT_WORKDIR || process.cwd();
-  return `You are a local OS assistant agent.\n` +
-    `Current Working Directory: ${currentWorkDir}\n` +
-    `Note: If the user asks to create a file/folder on the Desktop and your Working Directory is already the Desktop, just provide the filename (e.g., "MyDocument.txt") without any path prefix.\n` +
-    `\nYou MUST respond with a single JSON object only (no markdown, no extra text).\n\nYou can either:\n- Respond normally:\n  {"action":"respond","parameters":{"text":"..."}}\n\n- Or call exactly one tool:\n  {"action":"TOOL_NAME","parameters":{...}}\n\nAvailable tools and parameters:\n- read_file: {"path": "relative/path/from/ASSISTANT_WORKDIR"}\n- write_text_file: {"content": "...", "path": "filename_or_relative_path"}\n- create_folder: {"path": "filename_or_relative_path"}\n- list_files: {"path": "relative_path"}\n- create_pdf: {"content": "...", "path": "filename_or_relative_path.pdf"}\n- convert_file: {"input_path": "path", "output_format": "pdf"}\n\nRules:\n- CRITICAL: If the user asks for a PDF, you MUST use 'create_pdf'. NEVER use 'write_text_file' for .pdf extensions.\n- Prefer tool calls when the user asks to read/write/convert files or create folders/PDFs.\n- After a tool call, verify the result success=true before responding.\n- Be concise in respond.text.`;
+  return `You are a helpful, human-like voice assistant interfacing locally with a user's computer.
+Current Working Directory: ${currentWorkDir}
+Note: If the user asks to create a file on the Desktop and you are on it, just provide the filename.
+You MUST respond with a single JSON object only (no markdown, no extra text).
+You can either:
+- Respond normally:
+  {"action":"respond","parameters":{"text":"..."}}
+  * CRITICAL FOR RESPOND: Write the "text" exactly as a human would casually speak face-to-face. 
+  * Be natural, conversational, use contractions, and keep it very brief. Do NOT sound like a robot.
+
+- Or call exactly one tool:
+  {"action":"TOOL_NAME","parameters":{...}}
+
+${toolDescriptions}
+${toolRules}
+- After a tool call, verify the result success=true before responding.
+- Be extremely brief and human-like in respond.text.`;
 }
 
 function followupSystemPrompt() {
-  return `You are a local OS assistant agent.\nReturn ONLY JSON: {"action":"respond","parameters":{"text":"..."}}.\nDo not call tools in this step.`;
+  return `You are a local OS assistant agent interfacing directly with a user through voice.
+Return ONLY JSON: {"action":"respond","parameters":{"text":"..."}}.
+CRITICAL INSTRUCTION FOR TEXT: Write the \`text\` exactly as a human would speak it in a casual, natural, and friendly conversation.
+- Use contractions (I'll, you're, that's).
+- Keep it brief and conversational, as if chatting face-to-face. 
+- Eliminate robotic, formal, or repetitive phrasing (e.g. avoid saying "I have executed the tool" or "The task is complete").
+- Just say something natural like "All done!" or "I've sent that message for you."
+Do not call tools in this step.`;
 }
 
 function extractJsonObject(maybeText) {

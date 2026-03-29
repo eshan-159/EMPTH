@@ -1,11 +1,11 @@
-<!doctype html>
+const fs = require('fs');
+
+const indexHtml = `<!DOCTYPE html>
 <html>
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; media-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:* http://localhost:*;" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Empth</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <title>Empth OS</title>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div id="root" class="root">
@@ -20,9 +20,13 @@
           <div id="sphere" class="sphere"></div>
         </div>
       </div>
+
       <div id="status" class="status"></div>
       <div id="result" class="result"></div>
     </div>
-    <script type="module" src="./renderer.js"></script>
+
+    <script src="renderer.js"></script>
   </body>
-</html>
+</html>`;
+
+fs.writeFileSync('frontend/renderer/index.html', indexHtml);

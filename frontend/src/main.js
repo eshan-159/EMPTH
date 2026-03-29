@@ -17,11 +17,12 @@ let tray = null;
 let suppressBlurHideUntil = 0;
 let hasShownOnce = false;
 
-function getWindowBounds() {
+function getWindowBounds(overrideHeight) {
   const cursor = screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(cursor);
   const width = 720;
-  const height = 110;
+  // Use existing height if override not provided
+  const height = overrideHeight || (win ? win.getBounds().height : 110);
   const x = Math.round(display.workArea.x + (display.workArea.width - width) / 2);
   const y = Math.round(display.workArea.y + 90);
   return { x, y, width, height };
@@ -175,6 +176,11 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('empth:get-config', async () => ({ backendBaseUrl: BACKEND_BASE_URL }));
   ipcMain.handle('empth:hide', async () => win?.hide());
+  ipcMain.handle('empth:resize', async (e, height) => {
+    if (win && !win.isDestroyed()) {
+      win.setBounds(getWindowBounds(height));
+    }
+  });
   // Listen for bubble click
   ipcMain.on('empth:toggle', () => toggleWindow());
 

@@ -14,6 +14,7 @@ html, body {
   justify-content: flex-start;
   padding: 14px;
   box-sizing: border-box;
+  -webkit-app-region: drag;
 }
 
 .bar {
@@ -38,6 +39,7 @@ html, body {
   outline: none;
   color: white;
   font-size: 16px;
+  -webkit-app-region: no-drag;
 }
 
 .mic {
@@ -48,6 +50,12 @@ html, body {
   background: rgba(255,255,255,0.08);
   color: white;
   cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.mic:hover {
+  background: rgba(255,255,255,0.18);
 }
 
 .mic.recording {
@@ -57,10 +65,123 @@ html, body {
 
 .status {
   width: 100%;
-  color: rgba(255,255,255,0.75);
-  font-size: 12px;
-  padding: 8px 4px 0;
+  color: white;
+  font-size: 13px;
+  padding: 6px 4px 0;
+  line-height: 1.4;
+  max-height: 70px;
+  overflow-y: auto;
+  overflow-x: hidden;
   box-sizing: border-box;
+  white-space: pre-wrap;
+  -webkit-app-region: no-drag;
+}
+
+/* --- Voice Mode UI --- */
+.voice-mode {
+  width: 250px;
+  height: 250px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  background: rgba(30, 30, 30, 0.88);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-radius: 14px;
+  box-sizing: border-box;
+  -webkit-app-region: drag;
+  margin: 0 auto;
+}
+
+.close-voice {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.6);
+  font-size: 16px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: color 0.2s;
+}
+
+.close-voice:hover {
+  color: white;
+}
+
+.sphere-container {
+  width: 120px;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sphere {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #4facfe, #00f2fe);
+  box-shadow: 
+    0 0 20px rgba(79, 172, 254, 0.4),
+    inset -10px -10px 20px rgba(0, 0, 0, 0.3),
+    inset 10px 10px 20px rgba(255, 255, 255, 0.8);
+  transition: transform 0.05s ease-out, box-shadow 0.05s ease-out;
+  animation: idle-float 4s ease-in-out infinite;
+}
+
+@keyframes idle-float {
+  0% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-10px) scale(1.02); }
+  100% { transform: translateY(0px) scale(1); }
+}
+
+.sphere.processing {
+  animation: pulse-processing 1.5s cubic-bezier(0.1, 0.7, 1.0, 0.1) infinite, spin-gradient 2s linear infinite;
+}
+
+.sphere.playing {
+  background: radial-gradient(circle at 30% 30%, #50cc7f, #f5d100);
+}
+
+@keyframes pulse-processing {
+  0% { transform: scale(1) rotate(0deg); box-shadow: 0 0 20px rgba(79, 172, 254, 0.4); }
+  50% { transform: scale(1.2) rotate(180deg); box-shadow: 0 0 50px rgba(79, 172, 254, 0.9); }
+  100% { transform: scale(1) rotate(360deg); box-shadow: 0 0 20px rgba(79, 172, 254, 0.4); }
+}
+
+@media (prefers-color-scheme: light) {
+  .bar, .voice-mode {
+    background: rgba(255, 255, 255, 0.88);
+  }
+  .query {
+    color: black;
+  }
+  .mic {
+    border-color: rgba(0,0,0,0.18);
+    background: rgba(0,0,0,0.08);
+    color: black;
+  }
+  .mic:hover {
+    background: rgba(0,0,0,0.15);
+  }
+  .close-voice {
+    color: rgba(0,0,0,0.5);
+  }
+  .close-voice:hover {
+    color: black;
+  }
+  .status {
+    color: rgba(0,0,0,0.75);
+  }
+  .result {
+    color: black;
+  }
 }
 
 .result {

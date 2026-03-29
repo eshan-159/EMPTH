@@ -19,6 +19,7 @@ let recordedChunks = [];
 let isRecording = false;
 let audioPlayer = null;
 let activeStream = null;
+let currentAbortController = null;
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || '';
@@ -54,14 +55,35 @@ async function ensureConfig() {
 }
 
 function playAudioBase64(base64, mimeType) {
-  if (!base64 || !mimeType) return;
-  const url = `data:${mimeType};base64,${base64}`;
-  if (!audioPlayer) audioPlayer = new Audio();
-  audioPlayer.src = url;
-  audioPlayer.play().catch((e) => setStatus('Audio play error: ' + e.message));
+  return new Promise((resolve) => {
+    if (!base64 || !mimeType) {
+      resolve();
+      return;
+    }
+    const url = `data:${mimeType};base64,${base64}`;
+    if (!audioPlayer) audioPlayer = new Audio();
+    audioPlayer.src = url;
+    
+    audioPlayer.onended = () => {
+      resolve();
+    };
+    
+    audioPlayer.onerror = (e) => {
+      setStatus('Audio play error');
+      resolve();
+    };
+
+    audioPlayer.play().catch((e) => {
+      setStatus('Audio play error: ' + e.message);
+      resolve();
+    });
+  });
 }
 
 async function sendText(text) {
+  if (currentAbortController) currentAbortController.abort();
+  currentAbortController = new AbortController();
+
   setStatus('Thinking…');
   setResult('');
 
@@ -69,7 +91,8 @@ async function sendText(text) {
     const res = await fetch(`${backendBaseUrl}/api/agent/message`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text }),
+      signal: currentAbortController.signal
     });
 
     if (!res.ok) {
@@ -83,15 +106,26 @@ async function sendText(text) {
     const payload = await res.json();
     setStatus(payload?.meta?.intent ? `Intent: ${payload.meta.intent}` : '');
     setResult(payload.text);
-    playAudioBase64(payload.audioBase64, payload.audioMimeType);
+    return playAudioBase64(payload.audioBase64, payload.audioMimeType);
   } catch (err) {
+    if (err.name === 'AbortError') {
+      setStatus('Cancelled');
+      return;
+    }
     setStatus('Connection Error');
     setResult(`Failed to connect to ${backendBaseUrl}\n${err.message}`);
+  } finally {
+    if (currentAbortController?.signal.aborted === false) {
+       currentAbortController = null;
+    }
   }
 }
 
 async function sendAudio(blob) {
-  setStatus('Uploading…');
+  if (currentAbortController) currentAbortController.abort();
+  currentAbortController = new AbortController();
+
+  setStatus('Thinking…');
   setResult('');
 
   try {
@@ -102,7 +136,8 @@ async function sendAudio(blob) {
 
     const res = await fetch(`${backendBaseUrl}/api/agent/voice`, {
       method: 'POST',
-      body: fd
+      body: fd,
+      signal: currentAbortController.signal
     });
 
     if (!res.ok) {
@@ -121,39 +156,60 @@ async function sendAudio(blob) {
 
     setStatus(payload?.meta?.intent ? `Intent: ${payload.meta.intent}` : '');
     setResult(payload.text);
-    playAudioBase64(payload.audioBase64, payload.audioMimeType);
+    
+    vadState = 'playing';
+    setVoiceStateVisuals('playing');
+    
+    await playAudioBase64(payload.audioBase64, payload.audioMimeType);
   } catch (err) {
+    if (err.name === 'AbortError') {
+      setStatus('Cancelled');
+      return;
+    }
     setStatus('Connection Error');
     setResult(`Failed to connect to ${backendBaseUrl}\n${err.message}`);
+  } finally {
+    if (currentAbortController?.signal.aborted === false) {
+       currentAbortController = null;
+    }
   }
 }
 
-async function startRecording() {
-  if (isRecording) return;
-  recordedChunks = [];
+// --- VOICE MODE & VAD (Voice Activity Detection) ---
+let audioCtx = null;
+let analyser = null;
+let vadSilenceStart = 0;
+let vadState = 'idle'; // idle | recording | processing | playing
+let vadRaf = null;
 
-  try {
-    const constraints = {
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    };
-    activeStream = await navigator.mediaDevices.getUserMedia(constraints);
-    
-    // Safety check: is the track actually enabled/live?
-    const track = activeStream.getAudioTracks()[0];
-    if (!track) throw new Error('No audio track found.');
-    if (track.readyState === 'ended' || track.muted) {
-       setStatus('Mic is muted/ended'); 
-    }
-  } catch (err) {
-    setStatus('Mic Access Denied');
-    setResult('Check System Settings → Privacy → Microphone.\nError: ' + (err?.message || err));
-    return;
+// Dynamic noise floor tracking
+let noiseFloor = 0;
+let calibrationFrames = 0;
+
+const barModeEl = document.getElementById('bar-mode');
+const voiceModeEl = document.getElementById('voice-mode');
+const closeVoiceBtn = document.getElementById('close-voice');
+const sphereEl = document.getElementById('sphere');
+
+function setVoiceStateVisuals(state) {
+  sphereEl.classList.remove('processing', 'playing');
+  if (state === 'processing') {
+    sphereEl.classList.add('processing');
+    setStatus('Processing...');
+  } else if (state === 'playing') {
+    sphereEl.classList.add('playing');
+    setStatus('Playing reply...');
+  } else if (state === 'recording') {
+    setStatus('Listening... (Recording)');
+  } else {
+    setStatus('Listening... (Speak to auto-record)');
   }
+}
 
+async function startVADRecording() {
+  if (vadState !== 'idle') return;
+  recordedChunks = [];
+  
   const mimeType = pickRecorderMimeType();
   try {
     mediaRecorder = mimeType ? new MediaRecorder(activeStream, { mimeType }) : new MediaRecorder(activeStream);
@@ -162,77 +218,192 @@ async function startRecording() {
   }
 
   mediaRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) {
-      recordedChunks.push(e.data);
-    }
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
   };
 
-  mediaRecorder.onstop = () => {
-    try {
-      activeStream?.getTracks?.().forEach((t) => t.stop());
-    } catch {
-      // ignore
+  mediaRecorder.onstop = async () => {
+    vadState = 'processing';
+    setVoiceStateVisuals('processing');
+    const type = mediaRecorder.mimeType || 'audio/webm';
+    const blob = new Blob(recordedChunks, { type });
+    if (!blob.size) {
+      vadState = 'idle';
+      setVoiceStateVisuals('idle');
+      return;
     }
-    activeStream = null;
+    
+    // Send audio and wait for BOTH backend processing and audio playback
+    await sendAudio(blob);
+    
+    // Done playing, go back to idle listening state
+    vadState = 'idle';
+    setVoiceStateVisuals('idle');
+    // Rapidly reset the noiseFloor to avoid a false trigger right after they exit speaking
+    calibrationFrames = 0; 
+    noiseFloor = 0;
   };
 
-  // Request frequent data slices (100ms) to ensure chunks are emitted
-  // even if the recording is short. This fixes "empty blob" issues.
   mediaRecorder.start(100);
-  isRecording = true;
-  micEl.classList.add('recording');
-  setStatus('Recording… click Mic to stop');
+  vadState = 'recording';
+  setVoiceStateVisuals('recording');
 }
 
-async function stopRecording() {
-  if (!isRecording || !mediaRecorder) return;
-  mediaRecorder.stop();
-  isRecording = false;
-  micEl.classList.remove('recording');
-  setStatus('Processing…');
+function processVAD() {
+  if (!activeStream || !analyser) return;
 
-  const type = mediaRecorder.mimeType || 'audio/webm';
-  const blob = new Blob(recordedChunks, { type });
-  if (!blob.size) {
-    setStatus('No audio captured');
-    setResult('Try again and speak for ~1–2 seconds.');
+  const dataArray = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(dataArray);
+
+  let sum = 0;
+  for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+  const avg = sum / dataArray.length;
+
+  // --- Dynamic Noise Floor Algorithm ---
+  if (calibrationFrames < 50) { // Approx 1 second of audio to calibrate room noise
+    noiseFloor = ((noiseFloor * calibrationFrames) + avg) / (calibrationFrames + 1);
+    calibrationFrames++;
+    setStatus(`Calibrating room noise...`);
+    vadRaf = requestAnimationFrame(processVAD);
     return;
+  } else {
+    // Slowly adjust noise floor to account for changing room environments
+    if (avg < noiseFloor) {
+      noiseFloor = noiseFloor * 0.95 + avg * 0.05; // Adjust down quickly
+    } else if (vadState === 'idle') {
+      noiseFloor = noiseFloor * 0.999 + avg * 0.001; // Adjust up very slowly
+    }
   }
 
-  await sendAudio(blob);
+  const relativeVolume = avg - noiseFloor;
+
+  // Visuals: animate sphere with volume constraint (if not playing/processing)
+  if (vadState === 'idle' || vadState === 'recording') {
+    const scale = 1 + (Math.max(0, relativeVolume) / 255) * 1.5; // Amplified visual effect
+    sphereEl.style.transform = `scale(${scale})`;
+    const glow = Math.max(20, relativeVolume * 2);
+    sphereEl.style.boxShadow = `0 0 ${glow}px rgba(79, 172, 254, ${0.4 + (relativeVolume/255)})`;
+  } else {
+    sphereEl.style.transform = '';
+  }
+
+  // Audio Threshold logic based on relative room noise
+  const START_LOUDNESS = 6;
+  const STOP_LOUDNESS = 2;
+  const SILENCE_DELAY_MS = 1200;
+
+  if (vadState === 'idle') {
+    if (relativeVolume > START_LOUDNESS) {
+      startVADRecording();
+    }
+  } else if (vadState === 'recording') {
+    if (relativeVolume > STOP_LOUDNESS) {
+      vadSilenceStart = 0; // reset
+    } else {
+      if (vadSilenceStart === 0) {
+        vadSilenceStart = Date.now();
+      } else if (Date.now() - vadSilenceStart > SILENCE_DELAY_MS) {
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+          mediaRecorder.stop();
+        }
+      }
+    }
+  }
+
+  vadRaf = requestAnimationFrame(processVAD);
+}
+
+async function enterVoiceMode() {
+  barModeEl.style.display = 'none';
+  voiceModeEl.style.display = 'flex';
+  if (window.empth?.resize) window.empth.resize(300);
+  setResult('');
+  setStatus('Connecting to mic...');
+
+  try {
+    activeStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    
+    // Safety check
+    const track = activeStream.getAudioTracks()[0];
+    if (!track || track.readyState === 'ended' || track.muted) throw new Error('Mic muted or not found');
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const sourceNode = audioCtx.createMediaStreamSource(activeStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    sourceNode.connect(analyser);
+
+    noiseFloor = 0;
+    calibrationFrames = 0;
+    vadState = 'idle';
+    setVoiceStateVisuals('idle');
+    processVAD();
+  } catch (err) {
+    setStatus('Mic Error');
+    setResult(String(err?.message || err));
+  }
+}
+
+function exitVoiceMode() {
+  barModeEl.style.display = 'flex';
+  voiceModeEl.style.display = 'none';
+  if (window.empth?.resize) window.empth.resize(110);
+  
+  if (vadRaf) cancelAnimationFrame(vadRaf);
+  if (audioCtx) audioCtx.close();
+  if (activeStream) {
+    activeStream.getTracks().forEach(t => t.stop());
+    activeStream = null;
+  }
+  if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+  if (currentAbortController) currentAbortController.abort();
+  if (audioPlayer) audioPlayer.pause();
+  
+  vadState = 'idle';
+  resetUI();
 }
 
 function resetUI() {
+  if (currentAbortController) {
+    currentAbortController.abort();
+    currentAbortController = null;
+  }
   setStatus('');
   setResult('');
-  queryEl.value = '';
-  queryEl.focus();
+  if (barModeEl.style.display !== 'none') {
+    queryEl.value = '';
+    queryEl.focus();
+  }
 }
 
 // Spotlight-like behavior
-window.empth.onShown(() => resetUI());
+window.empth.onShown(() => {
+  if (voiceModeEl.style.display === 'flex') {
+    exitVoiceMode(); // Start fresh in text mode
+  } else {
+    resetUI();
+  }
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    if (currentAbortController) {
+      currentAbortController.abort();
+      currentAbortController = null;
+    }
+    if (voiceModeEl.style.display === 'flex') exitVoiceMode();
     window.empth.hide();
   }
 
-  if (e.key === 'Enter' && document.activeElement === queryEl) {
+  if (e.key === 'Enter' && document.activeElement === queryEl && barModeEl.style.display !== 'none') {
     const text = queryEl.value.trim();
     if (text) sendText(text);
   }
 });
 
-micEl.addEventListener('click', () => {
-  if (isRecording) stopRecording().catch((err) => {
-    setStatus('Mic error');
-    setResult(String(err?.message || err));
-  });
-  else startRecording().catch((err) => {
-    setStatus('Mic error');
-    setResult(String(err?.message || err));
-  });
-});
+micEl.addEventListener('click', enterVoiceMode);
+closeVoiceBtn.addEventListener('click', exitVoiceMode);
 
 await ensureConfig();
 queryEl.focus();
