@@ -42,12 +42,168 @@ const runAppleScript = (script) => new Promise((resolve, reject) => {
   child.stdout.on('data', d => out += d);
   child.stderr.on('data', d => err += d);
   child.on('close', code => {
-    if (code === 0) resolve(out);
+    if (code === 0) resolve(out.trim());
     else reject(new Error(err || 'AppleScript exited with code ' + code));
   });
   child.stdin.write(script);
   child.stdin.end();
 });
+
+export const readActiveWindowTool = {
+  declaration: {
+    name: "read_active_window",
+    description: "Reads the accessibility tree UI of the currently active macOS window to let the AI 'see' what is on screen.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: []
+    }
+  },
+  rules: "Use this tool FIRST when the user asks you to 'see my screen' or 'what is on my screen'. It returns the UI structure.",
+  handler: async () => {
+    const script = `
+      try
+        tell application "System Events"
+          -- If the AI assistant app itself is frontmost, temporarily hide it so we can read the user's actual screen
+          set currentApp to first application process whose frontmost is true
+          if name of currentApp is "Electron" or name of currentApp is "empth" then
+             set visible of currentApp to false
+             delay 0.2
+          end if
+          
+          set frontApp to first application process whose frontmost is true
+          set appName to name of frontApp
+          if exists (window 1 of frontApp) then
+            set winName to name of window 1 of frontApp
+            
+            -- Try to fetch meaningful UI elements like buttons, text fields, checkboxes
+            set uiElements to ""
+            try
+              set allElements to entire contents of window 1 of frontApp
+              set elementsList to {}
+              repeat with elem in allElements
+                try
+                  set eName to name of elem
+                  set eRole to role of elem
+                  -- Only grab elements with actual names to keep the output clean and fast
+                  if eName is not missing value and eName is not "" then
+                    set end of elementsList to (eRole & " '" & eName & "'")
+                  end if
+                end try
+              end repeat
+              
+              set AppleScript's text item delimiters to ", "
+              set uiElements to elementsList as string
+              set AppleScript's text item delimiters to ""
+            on error
+              set uiElements to "Too many nested elements to fast-read. You can ask the user to use 'check_screen' vision tool instead."
+            end try
+            
+            return "Active App: " & appName & " | Window: " & winName & " | Interactive Elements: [" & uiElements & "]"
+          else
+            return "Active App: " & appName & " | No open windows visible to accessibility."
+          end if
+        end tell
+      on error errMsg
+        return "Accessibility Error: " & errMsg
+      end try
+    `;
+    try {
+      const result = await runAppleScript(script);
+      return { success: true, ui_tree: result };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+};
+
+export const clickUIElementTool = {
+  declaration: {
+    name: "click_ui_element",
+    description: "Clicks a UI element (button, text field, link) in the currently active window by its exact accessibility name.",
+    parameters: {
+      type: "object",
+      properties: {
+        element_name: {
+          type: "string",
+          description: "The exact name of the UI element to click (obtained from read_active_window)"
+        }
+      },
+      required: ["element_name"]
+    }
+  },
+  rules: "Use this to interact with apps after reading the screen UI.",
+  handler: async (params) => {
+    if (!params.element_name) return { success: false, error: "Missing element_name" };
+    const script = `
+      try
+        tell application "System Events"
+          -- Ensure AI app isn't blocking clicks
+          set currentApp to first application process whose frontmost is true
+          if name of currentApp is "Electron" or name of currentApp is "empth" then
+             set visible of currentApp to false
+             delay 0.2
+          end if
+          
+          set frontApp to first application process whose frontmost is true
+          tell window 1 of frontApp
+            -- Deep search whole window to click the named element
+            set theElement to first UI element of entire contents whose name is "${params.element_name.replace(/"/g, '\\"')}"
+            click theElement
+          end tell
+        end tell
+        return "Successfully clicked: ${params.element_name}"
+      on error errMsg
+        return "Failed to click: " & errMsg
+      end try
+    `;
+    try {
+      const result = await runAppleScript(script);
+      return { success: true, message: result };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+};
+
+export const typeTextOSTool = {
+  declaration: {
+    name: "type_text_os",
+    description: "Types text directly into whatever text field currently has focus on macOS, optionally pressing Enter.",
+    parameters: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          description: "The text to type"
+        },
+        press_enter: {
+          type: "boolean",
+          description: "Whether to press the Enter/Return key after typing"
+        }
+      },
+      required: ["text"]
+    }
+  },
+  rules: "Use this after clicking a text field, or when focus is already in an input box.",
+  handler: async (params) => {
+    if (!params.text) return { success: false, error: "Missing text" };
+    const enterScript = params.press_enter ? '\n key code 36' : '';
+    const script = `
+      tell application "System Events"
+        keystroke "${params.text.replace(/"/g, '\\"')}"
+        ${enterScript}
+      end tell
+      return "Typed successfully"
+    `;
+    try {
+      const result = await runAppleScript(script);
+      return { success: true, message: result };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+};
 
 export const openApplicationTool = {
   declaration: {
@@ -70,7 +226,10 @@ export const openApplicationTool = {
     if (!app_name) return { success: false, error: "Missing app_name" };
 
     try {
-      await execAsync(`open -a "${app_name.replace(/"/g, '\\"')}"`);
+      // Use -g (background) flag so macOS doesn't steal focus from the AI app, 
+      // preventing the UI from hiding and halting execution.
+      const child = spawn('open', ['-g', '-a', app_name], { detached: true, stdio: 'ignore' });
+      child.unref();
       return { success: true, message: `Opened ${app_name}` };
     } catch (err) {
       return { success: false, error: `Failed to open ${app_name}: ${err.message}` };
@@ -226,23 +385,33 @@ export const sendWhatsappMessageTool = {
     if (!contact_name || !message) return { success: false, error: 'Missing parameters' };
     
     try {
-      const s = 'tell application "WhatsApp"\n' +
-                '    activate\n' +
-                'end tell\n' +
-                'delay 1.5\n' +
+      const file = '/Users/eshan./Desktop/empth/backend/data/contacts.json';
+      let contacts = {};
+      try {
+        const data = await fs.readFile(file, 'utf8');
+        contacts = JSON.parse(data);
+      } catch(e) {
+        return { success: false, error: "No contacts found. Please save the contact first." };
+      }
+      
+      let targetPhone = contacts[contact_name.toLowerCase()];
+      if (!targetPhone) {
+        return { success: false, error: `Contact ${contact_name} not found.` };
+      }
+
+      // Remove any non-numeric characters except +
+      targetPhone = targetPhone.replace(/[^0-9+]/g, '');
+
+      // Open whatsapp URL in background (-g) so it doesn't steal focus midway
+      const url = `whatsapp://send?phone=${targetPhone}&text=${encodeURIComponent(message)}`;
+      const child = spawn('open', ['-g', url], { detached: true, stdio: 'ignore' });
+      child.unref();
+
+      // Wait a bit for WhatsApp to process the scheme, then bring it forward and hit send
+      const s = 'delay 3.0\n' +
                 'tell application "System Events"\n' +
                 '    tell process "WhatsApp"\n' +
                 '        set frontmost to true\n' +
-                '        delay 0.5\n' +
-                '        keystroke "f" using {command down}\n' +
-                '        delay 1.0\n' +
-                '        keystroke "' + contact_name + '"\n' +
-                '        delay 2.0\n' +
-                '        key code 125\n' +
-                '        delay 0.5\n' +
-                '        keystroke return\n' +
-                '        delay 1.0\n' +
-                '        keystroke "' + message + '"\n' +
                 '        delay 0.5\n' +
                 '        keystroke return\n' +
                 '    end tell\n' +
@@ -424,6 +593,9 @@ export const checkScreenTool = {
 
 // Legacy export for backward compatibility
 export const osTools = {
+  read_active_window: readActiveWindowTool.handler,
+  click_ui_element: clickUIElementTool.handler,
+  type_text_os: typeTextOSTool.handler,
   open_application: openApplicationTool.handler,
   save_whatsapp_contact: saveWhatsappContactTool.handler,
   check_whatsapp_contact: checkWhatsappContactTool.handler,

@@ -9,13 +9,12 @@
   </head>
   <body>
     <div id="root" class="root">
-      <div id="bar-mode" class="bar">
+      <div id="bar-mode" class="bar" style="display: none;">
         <input id="query" class="query" type="text" placeholder="Ask Empth…" autofocus />
         <button id="mic" class="mic" title="Enter Voice Mode">Mic</button>
       </div>
 
-      <div id="voice-mode" class="voice-mode" style="display: none;">
-        <button id="close-voice" class="close-voice" title="Exit Voice Mode">✕</button>
+      <div id="voice-mode" class="voice-mode" style="display: flex;">
         <div class="sphere-container">
           <div id="sphere" class="sphere"></div>
         </div>

@@ -1,9 +1,8 @@
 let backendBaseUrl;
 
-const queryEl = document.getElementById('query');
-const micEl = document.getElementById('mic');
 const statusEl = document.getElementById('status');
 const resultEl = document.getElementById('result');
+const sphereEl = document.getElementById('sphere');
 
 window.onerror = function(message, source, lineno, colno, error) {
   if (statusEl) statusEl.textContent = `JS Error: ${message}`;
@@ -16,7 +15,6 @@ window.onunhandledrejection = function(event) {
 
 let mediaRecorder = null;
 let recordedChunks = [];
-let isRecording = false;
 let audioPlayer = null;
 let activeStream = null;
 let currentAbortController = null;
@@ -47,77 +45,46 @@ async function ensureConfig() {
   try {
     const cfg = await window.empth.getConfig();
     backendBaseUrl = cfg.backendBaseUrl;
-    setStatus(`Ready. Backend: ${backendBaseUrl}`);
+    setStatus('Listening for a clap...');
   } catch (err) {
     backendBaseUrl = 'http://127.0.0.1:3001';
-    setStatus(`Config error (using fallback): ${err.message}`);
+    setStatus(`Config error: ${err.message}`);
   }
 }
 
 function playAudioBase64(base64, mimeType) {
   return new Promise((resolve) => {
-    if (!base64 || !mimeType) {
-      resolve();
-      return;
-    }
+    if (!base64 || !mimeType) return resolve();
     const url = `data:${mimeType};base64,${base64}`;
     if (!audioPlayer) audioPlayer = new Audio();
     audioPlayer.src = url;
-    
-    audioPlayer.onended = () => {
-      resolve();
-    };
-    
-    audioPlayer.onerror = (e) => {
-      setStatus('Audio play error');
-      resolve();
-    };
-
-    audioPlayer.play().catch((e) => {
-      setStatus('Audio play error: ' + e.message);
-      resolve();
-    });
+    audioPlayer.onended = () => resolve();
+    audioPlayer.onerror = () => { setStatus('Audio play error'); resolve(); };
+    audioPlayer.play().catch((e) => { setStatus('Audio play error: ' + e.message); resolve(); });
   });
 }
 
-async function sendText(text) {
-  if (currentAbortController) currentAbortController.abort();
-  currentAbortController = new AbortController();
+// --- VOICE MODE & VAD ---
+let audioCtx = null;
+let analyser = null;
+let vadSilenceStart = 0;
+let vadState = 'idle'; 
 
-  setStatus('Thinking…');
-  setResult('');
+let noiseFloor = 0;
+let calibrationFrames = 0;
 
-  try {
-    const res = await fetch(`${backendBaseUrl}/api/agent/message`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
-      signal: currentAbortController.signal
-    });
-
-    if (!res.ok) {
-      let errText = 'Request failed';
-      try { const j = await res.json(); errText = j.error || j.message || errText; } catch {}
-      setStatus('Error');
-      setResult(`${res.status} ${errText}`);
-      return;
-    }
-
-    const payload = await res.json();
-    setStatus(payload?.meta?.intent ? `Intent: ${payload.meta.intent}` : '');
-    setResult(payload.text);
-    return playAudioBase64(payload.audioBase64, payload.audioMimeType);
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      setStatus('Cancelled');
-      return;
-    }
-    setStatus('Connection Error');
-    setResult(`Failed to connect to ${backendBaseUrl}\n${err.message}`);
-  } finally {
-    if (currentAbortController?.signal.aborted === false) {
-       currentAbortController = null;
-    }
+function setVoiceStateVisuals(state) {
+  sphereEl.classList.remove('processing', 'playing');
+  if (state === 'processing') {
+    sphereEl.classList.add('processing');
+    setStatus('Processing...');
+  } else if (state === 'playing') {
+    sphereEl.classList.add('playing');
+    setStatus('Playing reply...');
+  } else if (state === 'recording') {
+    setStatus('Listening... (Recording)');
+  } else {
+    setStatus('Listening for a clap...');
   }
 }
 
@@ -149,100 +116,48 @@ async function sendAudio(blob) {
     }
 
     const payload = await res.json();
-
-    if (payload.transcript) {
-      queryEl.value = payload.transcript;
-    }
-
     setStatus(payload?.meta?.intent ? `Intent: ${payload.meta.intent}` : '');
     setResult(payload.text);
-    
     vadState = 'playing';
     setVoiceStateVisuals('playing');
-    
     await playAudioBase64(payload.audioBase64, payload.audioMimeType);
   } catch (err) {
-    if (err.name === 'AbortError') {
-      setStatus('Cancelled');
-      return;
-    }
+    if (err.name === 'AbortError') return setStatus('Cancelled');
     setStatus('Connection Error');
-    setResult(`Failed to connect to ${backendBaseUrl}\n${err.message}`);
+    setResult(err.message);
   } finally {
-    if (currentAbortController?.signal.aborted === false) {
-       currentAbortController = null;
-    }
+    if (currentAbortController?.signal.aborted === false) currentAbortController = null;
+    vadState = 'idle';
+    setVoiceStateVisuals('idle');
+    calibrationFrames = 0;
+    noiseFloor = 0;
+
+    // After responding, wait a moment and collapse back to the dock
+    setTimeout(() => {
+      if (vadState === 'idle') window.empth.hide();
+    }, 5000);
   }
 }
 
-// --- VOICE MODE & VAD (Voice Activity Detection) ---
-let audioCtx = null;
-let analyser = null;
-let vadSilenceStart = 0;
-let vadState = 'idle'; // idle | recording | processing | playing
-let vadRaf = null;
-
-// Dynamic noise floor tracking
-let noiseFloor = 0;
-let calibrationFrames = 0;
-
-const barModeEl = document.getElementById('bar-mode');
-const voiceModeEl = document.getElementById('voice-mode');
-const closeVoiceBtn = document.getElementById('close-voice');
-const sphereEl = document.getElementById('sphere');
-
-function setVoiceStateVisuals(state) {
-  sphereEl.classList.remove('processing', 'playing');
-  if (state === 'processing') {
-    sphereEl.classList.add('processing');
-    setStatus('Processing...');
-  } else if (state === 'playing') {
-    sphereEl.classList.add('playing');
-    setStatus('Playing reply...');
-  } else if (state === 'recording') {
-    setStatus('Listening... (Recording)');
-  } else {
-    setStatus('Listening... (Speak to auto-record)');
-  }
-}
-
-async function startVADRecording() {
+function startVADRecording() {
   if (vadState !== 'idle') return;
   recordedChunks = [];
-  
   const mimeType = pickRecorderMimeType();
-  try {
-    mediaRecorder = mimeType ? new MediaRecorder(activeStream, { mimeType }) : new MediaRecorder(activeStream);
-  } catch (err) {
-    mediaRecorder = new MediaRecorder(activeStream);
-  }
-
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
+  try { mediaRecorder = mimeType ? new MediaRecorder(activeStream, { mimeType }) : new MediaRecorder(activeStream); } catch { mediaRecorder = new MediaRecorder(activeStream); }
+  
+  mediaRecorder.ondataavailable = (e) => { 
+    if (e.data && e.data.size > 0) recordedChunks.push(e.data); 
   };
-
+  
   mediaRecorder.onstop = async () => {
     vadState = 'processing';
     setVoiceStateVisuals('processing');
     const type = mediaRecorder.mimeType || 'audio/webm';
     const blob = new Blob(recordedChunks, { type });
-    if (!blob.size) {
-      vadState = 'idle';
-      setVoiceStateVisuals('idle');
-      return;
-    }
-    
-    // Send audio and wait for BOTH backend processing and audio playback
+    if (!blob.size) { vadState = 'idle'; setVoiceStateVisuals('idle'); return; }
     await sendAudio(blob);
-    
-    // Done playing, go back to idle listening state
-    vadState = 'idle';
-    setVoiceStateVisuals('idle');
-    // Rapidly reset the noiseFloor to avoid a false trigger right after they exit speaking
-    calibrationFrames = 0; 
-    noiseFloor = 0;
   };
-
+  
   mediaRecorder.start(100);
   vadState = 'recording';
   setVoiceStateVisuals('recording');
@@ -255,30 +170,29 @@ function processVAD() {
   analyser.getByteFrequencyData(dataArray);
 
   let sum = 0;
-  for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+  let maxVolume = 0;
+  for (let i = 0; i < dataArray.length; i++) {
+    sum += dataArray[i];
+    if (dataArray[i] > maxVolume) maxVolume = dataArray[i];
+  }
   const avg = sum / dataArray.length;
 
-  // --- Dynamic Noise Floor Algorithm ---
-  if (calibrationFrames < 50) { // Approx 1 second of audio to calibrate room noise
+  if (calibrationFrames < 50) { 
     noiseFloor = ((noiseFloor * calibrationFrames) + avg) / (calibrationFrames + 1);
     calibrationFrames++;
-    setStatus(`Calibrating room noise...`);
-    vadRaf = requestAnimationFrame(processVAD);
+    setStatus('Calibrating room noise...');
+    // Since window might be hidden, use setTimeout instead of requestAnimationFrame
+    setTimeout(processVAD, 16);
     return;
   } else {
-    // Slowly adjust noise floor to account for changing room environments
-    if (avg < noiseFloor) {
-      noiseFloor = noiseFloor * 0.95 + avg * 0.05; // Adjust down quickly
-    } else if (vadState === 'idle') {
-      noiseFloor = noiseFloor * 0.999 + avg * 0.001; // Adjust up very slowly
-    }
+    if (avg < noiseFloor) noiseFloor = noiseFloor * 0.95 + avg * 0.05;
+    else if (vadState === 'idle') noiseFloor = noiseFloor * 0.999 + avg * 0.001;
   }
 
   const relativeVolume = avg - noiseFloor;
 
-  // Visuals: animate sphere with volume constraint (if not playing/processing)
   if (vadState === 'idle' || vadState === 'recording') {
-    const scale = 1 + (Math.max(0, relativeVolume) / 255) * 1.5; // Amplified visual effect
+    const scale = 1 + (Math.max(0, relativeVolume) / 255) * 1.5;
     sphereEl.style.transform = `scale(${scale})`;
     const glow = Math.max(20, relativeVolume * 2);
     sphereEl.style.boxShadow = `0 0 ${glow}px rgba(79, 172, 254, ${0.4 + (relativeVolume/255)})`;
@@ -286,37 +200,32 @@ function processVAD() {
     sphereEl.style.transform = '';
   }
 
-  // Audio Threshold logic based on relative room noise
   const START_LOUDNESS = 6;
   const STOP_LOUDNESS = 2;
   const SILENCE_DELAY_MS = 1200;
+  const CLAP_THRESHOLD = 50;
 
   if (vadState === 'idle') {
-    if (relativeVolume > START_LOUDNESS) {
-      startVADRecording();
+    if (relativeVolume > CLAP_THRESHOLD || maxVolume > 200 || relativeVolume > START_LOUDNESS) {
+       startVADRecording();
     }
   } else if (vadState === 'recording') {
-    if (relativeVolume > STOP_LOUDNESS) {
-      vadSilenceStart = 0; // reset
-    } else {
-      if (vadSilenceStart === 0) {
-        vadSilenceStart = Date.now();
-      } else if (Date.now() - vadSilenceStart > SILENCE_DELAY_MS) {
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
-          mediaRecorder.stop();
-        }
+    if (relativeVolume > STOP_LOUDNESS) vadSilenceStart = 0;
+    else {
+      if (vadSilenceStart === 0) vadSilenceStart = Date.now();
+      else if (Date.now() - vadSilenceStart > SILENCE_DELAY_MS) {
+        if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
       }
     }
   }
 
-  vadRaf = requestAnimationFrame(processVAD);
+  // Poll aggressively for claps even when hidden - Chromium throttles hidden tabs sometimes
+  // but webPreferences has backgroundThrottling: false, so setTimeout works fine
+  setTimeout(processVAD, Math.max(16, 30));
 }
 
-async function enterVoiceMode() {
-  barModeEl.style.display = 'none';
-  voiceModeEl.style.display = 'flex';
+async function initAlwaysOnVoice() {
   if (window.empth?.resize) window.empth.resize(300);
-  setResult('');
   setStatus('Connecting to mic...');
 
   try {
@@ -324,10 +233,6 @@ async function enterVoiceMode() {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
     
-    // Safety check
-    const track = activeStream.getAudioTracks()[0];
-    if (!track || track.readyState === 'ended' || track.muted) throw new Error('Mic muted or not found');
-
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const sourceNode = audioCtx.createMediaStreamSource(activeStream);
     analyser = audioCtx.createAnalyser();
@@ -340,50 +245,18 @@ async function enterVoiceMode() {
     setVoiceStateVisuals('idle');
     processVAD();
   } catch (err) {
-    setStatus('Mic Error');
+    setStatus('Mic Error. Please force-quit and allow mic usage.');
     setResult(String(err?.message || err));
   }
 }
 
-function exitVoiceMode() {
-  barModeEl.style.display = 'flex';
-  voiceModeEl.style.display = 'none';
-  if (window.empth?.resize) window.empth.resize(110);
-  
-  if (vadRaf) cancelAnimationFrame(vadRaf);
-  if (audioCtx) audioCtx.close();
-  if (activeStream) {
-    activeStream.getTracks().forEach(t => t.stop());
-    activeStream = null;
-  }
-  if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
-  if (currentAbortController) currentAbortController.abort();
-  if (audioPlayer) audioPlayer.pause();
-  
-  vadState = 'idle';
-  resetUI();
-}
-
-function resetUI() {
+window.empth.onShown(() => {
   if (currentAbortController) {
     currentAbortController.abort();
     currentAbortController = null;
   }
-  setStatus('');
+  setStatus('Listening...');
   setResult('');
-  if (barModeEl.style.display !== 'none') {
-    queryEl.value = '';
-    queryEl.focus();
-  }
-}
-
-// Spotlight-like behavior
-window.empth.onShown(() => {
-  if (voiceModeEl.style.display === 'flex') {
-    exitVoiceMode(); // Start fresh in text mode
-  } else {
-    resetUI();
-  }
 });
 
 document.addEventListener('keydown', (e) => {
@@ -392,18 +265,20 @@ document.addEventListener('keydown', (e) => {
       currentAbortController.abort();
       currentAbortController = null;
     }
-    if (voiceModeEl.style.display === 'flex') exitVoiceMode();
     window.empth.hide();
-  }
-
-  if (e.key === 'Enter' && document.activeElement === queryEl && barModeEl.style.display !== 'none') {
-    const text = queryEl.value.trim();
-    if (text) sendText(text);
   }
 });
 
-micEl.addEventListener('click', enterVoiceMode);
-closeVoiceBtn.addEventListener('click', exitVoiceMode);
-
-await ensureConfig();
-queryEl.focus();
+ensureConfig().then(() => {
+  initAlwaysOnVoice();
+  setTimeout(() => {
+    fetch(`${backendBaseUrl}/api/agent/tts/startup`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.audioBase64) {
+          playAudioBase64(data.audioBase64, data.audioMimeType);
+        }
+      })
+      .catch(err => console.warn("Could not fetch startup TTS", err));
+  }, 2000);
+});

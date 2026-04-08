@@ -96,7 +96,8 @@ async function createWindow() {
     webPreferences: {
       preload: PRELOAD_PATH,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
 
@@ -110,6 +111,7 @@ async function createWindow() {
     if (!win?.isVisible()) return;
     if (Date.now() < suppressBlurHideUntil) return;
     win.hide();
+    win.webContents.send('empth:hidden');
   });
 }
 
@@ -148,6 +150,7 @@ function toggleWindow() {
   if (!win) return;
   if (win.isVisible()) {
     win.hide();
+    win.webContents.send('empth:hidden');
     return;
   }
 
@@ -176,6 +179,9 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('empth:get-config', async () => ({ backendBaseUrl: BACKEND_BASE_URL }));
   ipcMain.handle('empth:hide', async () => win?.hide());
+  ipcMain.handle('empth:show', async () => {
+    if (win && !win.isVisible()) toggleWindow();
+  });
   ipcMain.handle('empth:resize', async (e, height) => {
     if (win && !win.isDestroyed()) {
       win.setBounds(getWindowBounds(height));

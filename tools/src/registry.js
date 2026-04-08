@@ -11,6 +11,9 @@ export const toolRegistry = {
   create_folder: fileTools.create_folder,
   list_files: fileTools.list_files,
   open_application: osTools.open_application,
+  read_active_window: osTools.read_active_window,
+  click_ui_element: osTools.click_ui_element,
+  type_text_os: osTools.type_text_os,
   save_whatsapp_contact: osTools.save_whatsapp_contact,
   check_whatsapp_contact: osTools.check_whatsapp_contact,
   send_whatsapp_message: osTools.send_whatsapp_message,
@@ -28,6 +31,9 @@ Available tools and parameters:
 - create_pdf: {"content": "...", "path": "filename_or_relative_path.pdf"}
 - convert_file: {"input_path": "path", "output_format": "pdf"}
 - open_application: {"app_name": "Application Name"}
+- read_active_window: {} (Reads what is on the screen for macOS automation)
+- click_ui_element: {"element_name": "Exact Button or Label name"}
+- type_text_os: {"text": "Text to type", "press_enter": true}
 - check_whatsapp_contact: {"contact_name": "Name"}
 - save_whatsapp_contact: {"contact_name": "Name", "phone_number": "+919876543210"}
 - send_whatsapp_message: {"contact_name": "Name", "message": "Exact message"}
@@ -39,6 +45,10 @@ Available tools and parameters:
 export const toolRules = `
 Rules:
 - Prefer tool calls when the user asks to open an app (e.g. 'open_application' for VS Code or WhatsApp).
+- For screen interaction/automation:
+  1. ALWAYS use 'read_active_window' first when the user asks to "click something", "type something", or "see my screen".
+  2. Once you have the UI element names from 'read_active_window', use 'click_ui_element' to click the exact element name to gain focus.
+  3. If typing is needed, after clicking the text box, use 'type_text_os' to type physical keystrokes.
 - For sending a WhatsApp message:
   1. If you don't know the exact phone number, ALWAYS use 'check_whatsapp_contact' to see if the contact exists in storage FIRST. 
   2. If the contact exists, DO NOT SEND IT YET. Respond by asking the user to confirm the text BEFORE sending. Say: "I found this contact. Let's confirm. I'll send '...'. Should I send it?"

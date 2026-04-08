@@ -34,6 +34,14 @@ export async function registerAgentRoutes(app) {
       const audioBuffer = Buffer.concat(chunks);
 
       const stt = await sarvam.sarvamSTT({ audioBuffer, mimeType: file.mimetype });
+      
+      // Support wake word only extraction
+      if (req.query.sttOnly === 'true') {
+        const transcript = (stt.text || '').toLowerCase().replace(/[^a-z0-9 ]/g, '');
+        const isWakeUp = transcript.includes('wake up') || transcript.includes('wakeup') || transcript.includes('wake out');
+        return reply.send({ transcript: stt.text, isWakeUp });
+      }
+
       const result = await runAgent({ userText: stt.text, history });
       return reply.send({ ...result, transcript: stt.text });
     } catch (err) {
@@ -45,6 +53,36 @@ export async function registerAgentRoutes(app) {
         error: bodySnippet ? `${base}: ${bodySnippet}` : base,
         hint: 'Check SARVAM_API_KEY + SARVAM_STT_URL, and your LLM provider env vars.'
       });
+    }
+  });
+
+  app.get('/api/agent/tts/wakeup', async (req, reply) => {
+    try {
+      const { audioBase64, mimeType } = await sarvam.sarvamTTS({ 
+        text: "Hello boss! What are we going to do today?",
+        format: "wav"
+      });
+      return reply.send({ audioBase64, audioMimeType: mimeType });
+    } catch(err) {
+      req.log.error(err);
+      return reply.code(500).send({});
+    }
+  });
+
+  app.get('/api/agent/tts/startup', async (req, reply) => {
+    try {
+      const now = new Date();
+      const dateString = now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+      const timeString = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+      
+      const { audioBase64, mimeType } = await sarvam.sarvamTTS({ 
+        text: `Hello boss how are you. today is ${dateString}, ${timeString}. so what should we do today?`,
+        format: "wav"
+      });
+      return reply.send({ audioBase64, audioMimeType: mimeType });
+    } catch(err) {
+      req.log.error(err);
+      return reply.code(500).send({});
     }
   });
 
