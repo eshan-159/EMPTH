@@ -7,7 +7,8 @@ Spotlight-like floating bar (Electron) + local backend (Fastify) + tool-based LL
 - Floating Spotlight-style bar (frameless, always-on-top) with text + mic
 - Voice pipeline: mic → upload → Sarvam STT → agent
 - Tool-based agent: model returns strict JSON `{ action, parameters }`
-- Execution engine for 4 tools: `read_file`, `write_text_file`, `create_pdf`, `convert_file`
+- Execution engine for file and OS tools: `read_file`, `write_text_file`, `create_folder`, `list_files`, `create_pdf`, `convert_file`
+- Native OS automations via AppleScript: WhatsApp messaging, UI click/type, vision (llama-3.2-11b-vision-preview on Groq) to analyze current screen
 - Response pipeline: final text → (optional) Sarvam TTS → auto-play audio
 - Command history persisted in backend and exposed via API
 
@@ -107,12 +108,24 @@ All Sarvam calls happen from the backend only (API key never reaches the rendere
 
 ## 6) Tools supported
 
-The LLM agent can either respond normally or request a tool call using strict JSON:
+The LLM agent can either respond normally or request a tool call using strict JSON. Available tools include:
 
-- `read_file({ path })`
-- `write_text_file({ content, path })`
-- `create_pdf({ content, filename })`
-- `convert_file({ input_path, output_format })`
+### File Tools
+- `read_file({ path })`: Read contents of a relative path.
+- `write_text_file({ content, path })`: Write text to a path.
+- `create_folder({ path })`: Create a directory.
+- `list_files({ path })`: List contents of a directory.
+- `create_pdf({ content, filename })`: Generate a PDF.
+- `convert_file({ input_path, output_format })`: Convert files.
+
+### OS & WhatsApp Tools (macOS Native)
+- `open_application({ app_name })`: Opens a native Mac app (e.g., "WhatsApp", "VS Code").
+- `read_active_window({})`: Dumps accessibility UI elements of the current window.
+- `click_ui_element({ element_name })`: Clicks an exact button or label name in the active window.
+- `type_text_os({ text, press_enter })`: Simulates physical keystrokes.
+- `check_screen({ question })`: Takes a screenshot and queries a Vision model (like Groq LLaVA / Llama Edge Vision) from it.
+- `save_whatsapp_contact({ contact_name, phone_number })`, `check_whatsapp_contact({ contact_name })`, `list_whatsapp_contacts({})`: Manipulates local store of WhatsApp contacts.
+- `send_whatsapp_message({ contact_name, message })`: Actually sends the text via native automation.
 
 Tool outputs are returned to the agent, which produces a final user-facing answer.
 
