@@ -12,6 +12,29 @@ Spotlight-like floating bar (Electron) + local backend (Fastify) + tool-based LL
 - Response pipeline: final text → (optional) Sarvam TTS → auto-play audio
 - Command history persisted in backend and exposed via API
 
+## Architecture Diagram
+
+```mermaid
+graph TD
+    User((User)) -->|Voice / Text| UI[Electron Spotlight UI]
+    UI -->|POST /api/agent/*| Backend[Node.js Fastify Backend]
+    
+    Backend -->|Audio file| STT[Sarvam STT Service]
+    STT -->|Transcribed Text| Agent[LLM Agent]
+    Backend -->|Text message| Agent
+    
+    Agent <-->|JSON Requests & Responses| LLM[LLM Provider<br>Ollama / Groq / OpenAI etc.]
+    Agent <-->|Tool Execution| Tools[Tools Registry]
+    
+    Tools <-->|Scripts & System Calls| MacOS[macOS & File System]
+    
+    Agent -->|Final Text Response| TTS[Sarvam TTS Service]
+    TTS -->|Speech Audio| Backend
+    
+    Backend -->|JSON + Audio| UI
+    UI -->|Displays Text<br>Plays Audio| User
+```
+
 ## 1) Prereqs
 
 - macOS
